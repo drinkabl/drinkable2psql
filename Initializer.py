@@ -87,7 +87,7 @@ class PlanetDecoder(osmium.SimpleHandler):
       while not self.stat_thread_should_stop:
          sleep(1)
          processed_since_last_time = self.processed_nodes - self.stat_last_time_processed_nodes
-         self.last_time_processed = self.processed_nodes
+         self.stat_last_time_processed_nodes = self.processed_nodes
 
          logging.info(f'Processing {math.floor(processed_since_last_time / 1000)}k/s - found: {self.processed_matching_filter} nodes matching the criteria')
 

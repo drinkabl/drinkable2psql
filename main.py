@@ -69,6 +69,7 @@ def main():
          logging.critical('Something came up.', exc_info=True)
          return
    psql.stop()
+   logging.state('Stopping PSQL. It might take some seconds')
    # elif args.update:
    #    update(args.base_url, args.mode, filt, args.psqlhost, args.psqlport, args.psqldb, args.psqluser, args.psqlpassword)
 
