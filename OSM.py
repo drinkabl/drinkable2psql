@@ -1,93 +1,97 @@
+import logging
 import urllib.request
-import datetime as dt
-import threading
-from io import BytesIO
-import gzip
-import xml.etree.ElementTree as ET
+from datetime import datetime
 
 
 class OSM:
    @staticmethod
-   def state_number_decompose(state_number):
-      url_state = ('0' * (9 - len(str(state_number)))) + str(state_number)
-      
-      part1 = url_state[0:3]
-      part2 = url_state[3:6]
-      name = url_state[6:9]
-
-      return {"part1": part1, "part2": part2, "name": name}
+   def timestamp_to_datetime(timestamp):
+      logging.debug(f'Converting {timestamp} into a valid datetime')
+      return datetime.strptime(timestamp.replace('\\', ''), '%Y-%m-%dT%H:%M:%SZ')
 
    @staticmethod
-   def extract_state_info(url):
-      sequence_number = None
-      timestamp = None
+   def sequence_to_path(sequence_number):
+      sequence_pad = ('0' * (9 - len(str(sequence_number)))) + str(sequence_number)
+      path = f'{sequence_pad[0:3]}/{sequence_pad[3:6]}/{sequence_pad[6:9]}'
+      logging.debug(f'{sequence_number} padded and converted to {path}')
+      return path
 
+   @staticmethod
+   def decode_state_info(state):
+      logging.debug(f'Decoding state information for state')
+      rows = state.split('\n')
+      content = {}
+      for row in rows:
+         row = row.strip()
+         if len(row) == 0 or row[0] == '#':
+            continue
+         key, value = row.split('=')
+         content[key] = value
+      
+      if not 'timestamp' in content:
+         raise f'Timestamp not found in state'
+      if not 'sequenceNumber' in content:
+         raise f'sequenceNumber not found in state'
+   
+      content['timestamp'] = OSM.timestamp_to_datetime(content['timestamp'])
+      content['sequenceNumber'] = int(content['sequenceNumber'])
+      return content
+
+   @staticmethod
+   def download_state_info(url):
+      logging.debug(f'Downloading {url}')
       with urllib.request.urlopen(url) as response:
-         state = response.read().decode('utf8')
-         lines = state.split('\n')
-         for line in lines:
-            if len(line) == 0 or line[0] == '#':
-               continue
-            try:
-               key, value = line.split('=')
-               if key == 'sequenceNumber':
-                  sequence_number = int(value)
-               elif key == 'timestamp':
-                  timestamp = dt.datetime.strptime(value.replace('\\', ''), '%Y-%m-%dT%H:%M:%SZ')
-            except Exception as e:
-               print(e)
-               continue
+         return response.read().decode('utf8')
 
-      if sequence_number is None:
-         raise Exception(f'{url} has no sequence number')
-      return sequence_number, timestamp
-
+   @staticmethod
+   def get_state_info(url):
+      logging.debug(f'Getting state information for url {url}')
+      state = OSM.download_state_info(url)
+      state_dict = OSM.decode_state_info(state)
+      return state_dict
+   
    @staticmethod
    def get_latest_state_info(base_url, mode):
+      logging.debug(f'Getting most recent state information')
       url = f'{base_url}/{mode}/state.txt'
-      return OSM.extract_state_info(url)
+      state = OSM.get_state_info(url)
+      logging.debug(f'latest state has the following content: {state}')
+      return state
 
    @staticmethod
-   def get_state_info(base_url, mode, state_number):
-      state_decomposed = OSM.state_number_decompose(state_number)
-      url = f"{base_url}/{mode}/{state_decomposed['part1']}/{state_decomposed['part2']}/{state_decomposed['name']}.state.txt"
-      return OSM.extract_state_info(url)
+   def get_state_info_from_sequence(base_url, mode, sequence_number):
+      logging.debug(f'Getting state information for sequence {sequence_number}')
+      sequence_path = OSM.sequence_to_path(sequence_number)
+      url = f'{base_url}/{mode}/{sequence_path}.state.txt'
+      state = OSM.get_state_info(url)
+      logging.debug(f'state {sequence_number} has the following content: {state}')
+      return state
 
    @staticmethod
-   def download_state(base_url, mode, state_number):
-      state_decomposed = OSM.state_number_decompose(state_number)
-      url = f"{base_url}/{mode}/{state_decomposed['part1']}/{state_decomposed['part2']}/{state_decomposed['name']}.osc.gz"
-      with urllib.request.urlopen(url) as response:
-         responseByte = BytesIO(response.read())
-         with gzip.GzipFile(fileobj=responseByte) as oscFile:
-            xml = ET.parse(oscFile).getroot()
-            return xml
+   def get_closest_state(base_url, mode, timestamp):
+      latest_state = OSM.get_latest_state_info(base_url, mode)
+      high = latest_state['sequenceNumber']
+      low = 0
+      mid = 0
 
-   @staticmethod
-   def get_elem(xmlElement):
-      tags = xmlElement.findall('tag')
-      elem = xmlElement.attrib
-      elem['tags'] = {tag.get('k'): tag.get('v') for tag in tags}
-      
-      return elem
+      while low <= high:
+         mid = (high + low) // 2
+         state_mid = OSM.get_state_info_from_sequence(base_url, mode, mid)
 
-   @staticmethod
-   def get_nodes(xmlElement):
-      return [OSM.get_elem(x) for x in xmlElement.findall('node')]
+         if state_mid['timestamp'] < timestamp:
+            low = mid + 1
+         elif state_mid['timestamp'] > timestamp:
+            high = mid - 1
+         else:
+            return state_mid
+            
+      if state_mid is None:
+         raise 'Cannot find any matching state for the given timestamp. Is the planet file too old?'
 
-   @staticmethod
-   def calculate_state_from_timestamp(base_url, mode, target_timestamp):
-      (latest_seq_number, latest_state_timestamp) = OSM.get_latest_state_info(base_url, mode)
-      if latest_state_timestamp.timestamp() < target_timestamp.timestamp():
-         return latest_seq_number
+      # make sure we actually take a smaller value
+      if state_mid['timestamp'] > timestamp:
+         state_mid = OSM.get_state_info_from_sequence(base_url, mode, mid - 1)
 
-      curr_seq_number = latest_seq_number
-      while True:
-         _, state_timestamp = OSM.get_state_info(base_url, mode, curr_seq_number)
+      logging.debug(f'Getting closest state from timestamp: given {timestamp}, we found {state_mid}')
 
-         if state_timestamp.timestamp() < target_timestamp.timestamp():
-            return curr_seq_number, state_timestamp
-         curr_seq_number -= 1
-
-         if curr_seq_number < 0:
-            raise Exception("sequence number less then 0. That is totally unexpected")
+      return state_mid
